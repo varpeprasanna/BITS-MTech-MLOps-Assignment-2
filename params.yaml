@@ -1,0 +1,22 @@
+seed: 42
+
+training:
+  batch_size: 16
+  epochs: 10
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+model:
+  dropout: 0.3
+
+data:
+  image_size: 224
+  num_workers: 2
+
+augmentation:
+  horizontal_flip_probability: 0.5
+  rotation_degrees: 10
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.05
