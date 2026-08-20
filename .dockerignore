@@ -1,0 +1,52 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# DVC
+.dvc/
+.dvcignore
+*.dvc
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Development environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# MLflow
+mlflow.db
+mlruns/
+mlartifacts/
+
+# Dataset
+data/raw/
+data/processed/
+
+# Development scripts/tests
+tests/
+scripts/
+
+# Training artifacts we don't need
+artifacts/*.png
+artifacts/*.json
+
+# Keep the trained model
+!artifacts/best_model.pt
+
+# Logs
+*.log
+logs/
+
+# Secrets
+.env
+.env.*
+kaggle.json
