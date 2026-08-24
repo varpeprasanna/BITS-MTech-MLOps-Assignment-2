@@ -1,11 +1,27 @@
 from pathlib import Path
+import sys
 
 import torch
+
+
+# ------------------------------------------------------------------
+# Project root
+# ------------------------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Ensure imports work when this file is executed directly:
+#     python scripts/create_test_model.py
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 
 from src.model import create_model
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# ------------------------------------------------------------------
+# Model path
+# ------------------------------------------------------------------
 
 MODEL_PATH = (
     PROJECT_ROOT
