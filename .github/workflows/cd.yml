@@ -1,0 +1,54 @@
+name: Cats vs Dogs CD
+
+on:
+  workflow_run:
+    workflows:
+      - Cats vs Dogs CI
+    types:
+      - completed
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+
+  deploy:
+    name: Build and Publish Production Image
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build production image
+        run: |
+          docker build \
+            -t ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }} \
+            -t ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:latest \
+            .
+
+      - name: Push production image
+        run: |
+          docker push \
+            ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }}
+
+          docker push \
+            ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:latest
+
+      - name: Deployment summary
+        run: |
+          echo "Production image published successfully."
+          echo "Image:"
+          echo "ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }}"
