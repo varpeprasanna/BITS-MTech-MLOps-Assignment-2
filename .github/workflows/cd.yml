@@ -14,8 +14,14 @@ permissions:
 
 jobs:
 
+  # ============================================================
+  # DEPLOYMENT JOB
+  # ============================================================
+
   deploy:
+
     name: Deploy to Local Kubernetes
+
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     runs-on:
@@ -26,100 +32,189 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. Checkout repository
-      # ============================================================
+      # ==========================================================
+      # 1. Checkout exact commit that passed CI
+      # ==========================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
 
-      # ============================================================
+      # ==========================================================
       # 2. Verify Docker
-      # ============================================================
+      # ==========================================================
 
       - name: Verify Docker
         shell: powershell
         run: |
+          Write-Host "Docker version:"
           docker version --format "{{.Server.Version}}"
 
+          Write-Host ""
+          Write-Host "Docker containers:"
+          docker ps
 
-      # ============================================================
-      # 3. Verify Kubernetes cluster
-      # ============================================================
 
-      - name: Verify Kubernetes cluster
+      # ==========================================================
+      # 3. Verify Kind cluster exists
+      # ==========================================================
+
+      - name: Verify Kind cluster
         shell: powershell
         run: |
+
+          Write-Host "Kind clusters:"
+          kind get clusters
+
+          $clusters = kind get clusters
+
+          if ($clusters -notcontains "cats-dogs-mlops") {
+              Write-Error "Kind cluster 'cats-dogs-mlops' does not exist."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Kind cluster 'cats-dogs-mlops' exists."
+
+
+      # ==========================================================
+      # 4. Verify Kubernetes context
+      # ==========================================================
+
+      - name: Verify Kubernetes context
+        shell: powershell
+        run: |
+
           Write-Host "Current Kubernetes context:"
           kubectl config current-context
+
+          $context = kubectl config current-context
+
+          if ($context -ne "kind-cats-dogs-mlops") {
+              Write-Error "Unexpected Kubernetes context: $context"
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Correct Kubernetes context confirmed."
+
+
+      # ==========================================================
+      # 5. Verify Kubernetes API server
+      # ==========================================================
+
+      - name: Verify Kubernetes cluster health
+        shell: powershell
+        run: |
+
+          Write-Host "Kubernetes cluster information:"
+          kubectl cluster-info
 
           Write-Host ""
           Write-Host "Kubernetes nodes:"
           kubectl get nodes
 
           Write-Host ""
+          Write-Host "Node readiness:"
+          kubectl wait `
+            --for=condition=Ready `
+            node/cats-dogs-mlops-control-plane `
+            --timeout=60s
+
+
+      # ==========================================================
+      # 6. Verify existing deployment
+      # ==========================================================
+
+      - name: Inspect existing deployment
+        shell: powershell
+        run: |
+
           Write-Host "Existing deployment:"
           kubectl get deployment cats-dogs-api -o wide
 
+          Write-Host ""
+          Write-Host "Existing pods:"
+          kubectl get pods -l app=cats-dogs-api -o wide
 
-      # ============================================================
-      # 4. Apply Kubernetes manifests
-      # ============================================================
+          Write-Host ""
+          Write-Host "Existing service:"
+          kubectl get service cats-dogs-api
 
-      - name: Deploy Kubernetes manifests
+
+      # ==========================================================
+      # 7. Apply Kubernetes manifests
+      # ==========================================================
+
+      - name: Apply Kubernetes manifests
         shell: powershell
         run: |
+
           kubectl apply -f k8s/deployment.yaml
           kubectl apply -f k8s/service.yaml
 
 
-      # ============================================================
-      # 5. Force Kubernetes to use the latest registry image
-      # ============================================================
+      # ==========================================================
+      # 8. Force latest registry image
+      # ==========================================================
 
       - name: Restart deployment
         shell: powershell
         run: |
+
           kubectl rollout restart deployment/cats-dogs-api
 
 
-      # ============================================================
-      # 6. Wait for successful rollout
-      # ============================================================
+      # ==========================================================
+      # 9. Wait for rollout
+      # ==========================================================
 
       - name: Wait for deployment rollout
         shell: powershell
         run: |
-          kubectl rollout status deployment/cats-dogs-api --timeout=180s
+
+          kubectl rollout status `
+            deployment/cats-dogs-api `
+            --timeout=180s
 
 
-      # ============================================================
-      # 7. Verify deployment state
-      # ============================================================
+      # ==========================================================
+      # 10. Verify deployed resources
+      # ==========================================================
 
       - name: Verify deployed resources
         shell: powershell
         run: |
+
           Write-Host "Deployment:"
-          kubectl get deployment cats-dogs-api
+          kubectl get deployment cats-dogs-api -o wide
 
           Write-Host ""
           Write-Host "Pods:"
-          kubectl get pods -l app=cats-dogs-api -o wide
+          kubectl get pods `
+            -l app=cats-dogs-api `
+            -o wide
 
           Write-Host ""
           Write-Host "Service:"
           kubectl get service cats-dogs-api
 
 
-      # ============================================================
-      # 8. Start Kubernetes port-forward
-      # ============================================================
+      # ==========================================================
+      # 11. Start port-forward
+      # ==========================================================
 
       - name: Start port-forward
         shell: powershell
         run: |
+
+          $pidFile = "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+
+          if (Test-Path $pidFile) {
+              Remove-Item $pidFile -Force
+          }
 
           $process = Start-Process `
             -FilePath "kubectl" `
@@ -127,16 +222,16 @@ jobs:
             -PassThru `
             -WindowStyle Hidden
 
-          $process.Id | Out-File "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+          $process.Id | Out-File $pidFile
 
-          Write-Host "Port-forward started with PID: $($process.Id)"
+          Write-Host "Port-forward PID: $($process.Id)"
 
 
-      # ============================================================
-      # 9. Wait for API
-      # ============================================================
+      # ==========================================================
+      # 12. Wait for API health
+      # ==========================================================
 
-      - name: Wait for API
+      - name: Wait for API health
         shell: powershell
         run: |
 
@@ -148,13 +243,18 @@ jobs:
               try {
 
                   $response = Invoke-RestMethod `
-                      -Uri "http://localhost:8001/health" `
-                      -TimeoutSec 5
+                    -Uri "http://localhost:8001/health" `
+                    -TimeoutSec 5
 
-                  if ($response.status -eq "healthy") {
+                  Write-Host ""
+                  Write-Host "Health response:"
+                  $response | ConvertTo-Json
 
-                      Write-Host "API is healthy."
-                      $response | ConvertTo-Json
+                  if ($response.status -eq "healthy" -and
+                      $response.model_loaded -eq $true) {
+
+                      Write-Host ""
+                      Write-Host "API health check PASSED."
                       exit 0
                   }
 
@@ -168,36 +268,64 @@ jobs:
               $attempt++
           }
 
-          Write-Error "API did not become healthy."
+          Write-Error "API did not become healthy within the expected time."
           exit 1
 
 
-      # ============================================================
-      # 10. Run post-deployment smoke test
-      # ============================================================
+      # ==========================================================
+      # 13. Run post-deployment smoke test
+      # ==========================================================
 
       - name: Run post-deployment smoke test
         shell: powershell
         env:
           SMOKE_TEST_BASE_URL: http://localhost:8001
         run: |
+
           python scripts/smoke_test.py
 
 
-      # ============================================================
-      # 11. Show deployment logs
-      # ============================================================
+      # ==========================================================
+      # 14. Display deployment logs
+      # ==========================================================
 
       - name: Show deployment logs
         if: always()
         shell: powershell
         run: |
+
+          Write-Host "Deployment logs:"
           kubectl logs deployment/cats-dogs-api --tail=50
 
 
-      # ============================================================
-      # 12. Cleanup port-forward
-      # ============================================================
+      # ==========================================================
+      # 15. Display final Kubernetes state
+      # ==========================================================
+
+      - name: Final deployment state
+        if: always()
+        shell: powershell
+        run: |
+
+          Write-Host "Nodes:"
+          kubectl get nodes
+
+          Write-Host ""
+          Write-Host "Deployment:"
+          kubectl get deployment cats-dogs-api
+
+          Write-Host ""
+          Write-Host "Pods:"
+          kubectl get pods -l app=cats-dogs-api -o wide
+
+          Write-Host ""
+          Write-Host "Services:"
+          kubectl get services
+
+
+      # ==========================================================
+      # 16. Cleanup port-forward
+      # ==========================================================
 
       - name: Cleanup port-forward
         if: always()
@@ -213,9 +341,12 @@ jobs:
               Write-Host "Stopping port-forward process $processId"
 
               Stop-Process `
-                  -Id $processId `
-                  -Force `
-                  -ErrorAction SilentlyContinue
+                -Id $processId `
+                -Force `
+                -ErrorAction SilentlyContinue
 
-              Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+              Remove-Item `
+                $pidFile `
+                -Force `
+                -ErrorAction SilentlyContinue
           }
