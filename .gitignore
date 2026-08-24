@@ -47,6 +47,7 @@ data/processed/*
 # ================================
 artifacts/*
 !artifacts/.gitkeep
+!artifacts/best_model.pt
 
 # ================================
 # Logs

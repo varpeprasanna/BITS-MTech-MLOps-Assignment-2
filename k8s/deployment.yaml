@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: cats-dogs-api
+  labels:
+    app: cats-dogs-api
+
+spec:
+
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: cats-dogs-api
+
+  template:
+
+    metadata:
+      labels:
+        app: cats-dogs-api
+
+    spec:
+
+      containers:
+
+        - name: cats-dogs-api
+
+          # The CI/CD workflow will replace IMAGE_TAG
+          # with the Git commit SHA before deployment.
+          image: ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:IMAGE_TAG
+
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
