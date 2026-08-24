@@ -3,52 +3,219 @@ name: Cats vs Dogs CD
 on:
   workflow_run:
     workflows:
-      - Cats vs Dogs CI
+      - "Cats vs Dogs CI"
     types:
       - completed
+    branches:
+      - main
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
 
   deploy:
-    name: Build and Publish Production Image
+    name: Deploy to Local Kubernetes
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - mlops
 
     steps:
 
+      # ============================================================
+      # 1. Checkout repository
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build production image
+      # ============================================================
+      # 2. Verify Docker
+      # ============================================================
+
+      - name: Verify Docker
+        shell: powershell
         run: |
-          docker build \
-            -t ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }} \
-            -t ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:latest \
-            .
+          docker version --format "{{.Server.Version}}"
 
-      - name: Push production image
+
+      # ============================================================
+      # 3. Verify Kubernetes cluster
+      # ============================================================
+
+      - name: Verify Kubernetes cluster
+        shell: powershell
         run: |
-          docker push \
-            ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }}
+          Write-Host "Current Kubernetes context:"
+          kubectl config current-context
 
-          docker push \
-            ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:latest
+          Write-Host ""
+          Write-Host "Kubernetes nodes:"
+          kubectl get nodes
 
-      - name: Deployment summary
+          Write-Host ""
+          Write-Host "Existing deployment:"
+          kubectl get deployment cats-dogs-api -o wide
+
+
+      # ============================================================
+      # 4. Apply Kubernetes manifests
+      # ============================================================
+
+      - name: Deploy Kubernetes manifests
+        shell: powershell
         run: |
-          echo "Production image published successfully."
-          echo "Image:"
-          echo "ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:${{ github.event.workflow_run.head_sha }}"
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+
+      # ============================================================
+      # 5. Force Kubernetes to use the latest registry image
+      # ============================================================
+
+      - name: Restart deployment
+        shell: powershell
+        run: |
+          kubectl rollout restart deployment/cats-dogs-api
+
+
+      # ============================================================
+      # 6. Wait for successful rollout
+      # ============================================================
+
+      - name: Wait for deployment rollout
+        shell: powershell
+        run: |
+          kubectl rollout status deployment/cats-dogs-api --timeout=180s
+
+
+      # ============================================================
+      # 7. Verify deployment state
+      # ============================================================
+
+      - name: Verify deployed resources
+        shell: powershell
+        run: |
+          Write-Host "Deployment:"
+          kubectl get deployment cats-dogs-api
+
+          Write-Host ""
+          Write-Host "Pods:"
+          kubectl get pods -l app=cats-dogs-api -o wide
+
+          Write-Host ""
+          Write-Host "Service:"
+          kubectl get service cats-dogs-api
+
+
+      # ============================================================
+      # 8. Start Kubernetes port-forward
+      # ============================================================
+
+      - name: Start port-forward
+        shell: powershell
+        run: |
+
+          $process = Start-Process `
+            -FilePath "kubectl" `
+            -ArgumentList "port-forward service/cats-dogs-api 8001:8000" `
+            -PassThru `
+            -WindowStyle Hidden
+
+          $process.Id | Out-File "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+
+          Write-Host "Port-forward started with PID: $($process.Id)"
+
+
+      # ============================================================
+      # 9. Wait for API
+      # ============================================================
+
+      - name: Wait for API
+        shell: powershell
+        run: |
+
+          $maxAttempts = 30
+          $attempt = 0
+
+          while ($attempt -lt $maxAttempts) {
+
+              try {
+
+                  $response = Invoke-RestMethod `
+                      -Uri "http://localhost:8001/health" `
+                      -TimeoutSec 5
+
+                  if ($response.status -eq "healthy") {
+
+                      Write-Host "API is healthy."
+                      $response | ConvertTo-Json
+                      exit 0
+                  }
+
+              }
+              catch {
+
+                  Write-Host "API not ready yet..."
+              }
+
+              Start-Sleep -Seconds 2
+              $attempt++
+          }
+
+          Write-Error "API did not become healthy."
+          exit 1
+
+
+      # ============================================================
+      # 10. Run post-deployment smoke test
+      # ============================================================
+
+      - name: Run post-deployment smoke test
+        shell: powershell
+        env:
+          SMOKE_TEST_BASE_URL: http://localhost:8001
+        run: |
+          python scripts/smoke_test.py
+
+
+      # ============================================================
+      # 11. Show deployment logs
+      # ============================================================
+
+      - name: Show deployment logs
+        if: always()
+        shell: powershell
+        run: |
+          kubectl logs deployment/cats-dogs-api --tail=50
+
+
+      # ============================================================
+      # 12. Cleanup port-forward
+      # ============================================================
+
+      - name: Cleanup port-forward
+        if: always()
+        shell: powershell
+        run: |
+
+          $pidFile = "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+
+          if (Test-Path $pidFile) {
+
+              $processId = Get-Content $pidFile
+
+              Write-Host "Stopping port-forward process $processId"
+
+              Stop-Process `
+                  -Id $processId `
+                  -Force `
+                  -ErrorAction SilentlyContinue
+
+              Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+          }
