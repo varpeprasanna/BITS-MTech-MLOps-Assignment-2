@@ -28,9 +28,9 @@ spec:
 
           # The CI/CD workflow will replace IMAGE_TAG
           # with the Git commit SHA before deployment.
-          image: ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:IMAGE_TAG
+          image: ghcr.io/varpeprasanna/bits-mtech-mlops-assignment-2:latest
 
-          imagePullPolicy: Always
+          imagePullPolicy: IfNotPresent
 
           ports:
             - containerPort: 8000

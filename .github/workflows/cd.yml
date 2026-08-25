@@ -9,23 +9,33 @@ on:
     branches:
       - main
 
+
 permissions:
   contents: read
   packages: read
+
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: varpeprasanna/bits-mtech-mlops-assignment-2
 
+  LOCAL_REGISTRY: localhost:5001
+  LOCAL_IMAGE_NAME: cats-dogs-api
+
+  K8S_DEPLOYMENT: cats-dogs-api
+  K8S_CONTAINER: cats-dogs-api
+
+
 jobs:
 
-  deploy:
+  # ============================================================
+  # DEPLOY
+  # ============================================================
 
+  deploy:
     name: Deploy to Local Kubernetes
 
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     runs-on:
       - self-hosted
@@ -36,7 +46,7 @@ jobs:
     steps:
 
       # ========================================================
-      # 1. Checkout exact commit that triggered CI
+      # 1. Checkout repository at the exact CI commit
       # ========================================================
 
       - name: Checkout repository
@@ -46,24 +56,47 @@ jobs:
 
 
       # ========================================================
-      # 2. Set exact immutable image
+      # 2. Calculate exact deployment image
       # ========================================================
 
       - name: Set deployment image
         shell: powershell
         run: |
+          $FULL_SHA = "${{ github.event.workflow_run.head_sha }}"
 
-          $image = "${env:REGISTRY}/${env:IMAGE_NAME}:${{ github.event.workflow_run.head_sha }}"
+          if ([string]::IsNullOrWhiteSpace($FULL_SHA)) {
+              Write-Error "CI commit SHA is empty."
+              exit 1
+          }
 
-          "DEPLOY_IMAGE=$image" | Out-File `
+          $DEPLOY_IMAGE = "${env:REGISTRY}/${env:IMAGE_NAME}:${FULL_SHA}"
+          $LOCAL_IMAGE = "${env:LOCAL_REGISTRY}/${env:LOCAL_IMAGE_NAME}:${FULL_SHA}"
+
+          "FULL_SHA=$FULL_SHA" | Out-File `
             -FilePath $env:GITHUB_ENV `
             -Encoding utf8 `
             -Append
 
-          Write-Host "=========================================="
-          Write-Host "Deployment image:"
-          Write-Host $image
-          Write-Host "=========================================="
+          "DEPLOY_IMAGE=$DEPLOY_IMAGE" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          "LOCAL_IMAGE=$LOCAL_IMAGE" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          Write-Host "CI commit SHA:"
+          Write-Host $FULL_SHA
+
+          Write-Host ""
+          Write-Host "GHCR deployment image:"
+          Write-Host $DEPLOY_IMAGE
+
+          Write-Host ""
+          Write-Host "Local registry image:"
+          Write-Host $LOCAL_IMAGE
 
 
       # ========================================================
@@ -73,23 +106,16 @@ jobs:
       - name: Verify Docker
         shell: powershell
         run: |
-
-          docker version
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Docker is not available."
-              exit 1
-          }
+          docker version --format "{{.Server.Version}}"
 
 
       # ========================================================
-      # 4. Verify Kind / Kubernetes
+      # 4. Verify Kind
       # ========================================================
 
-      - name: Verify Kubernetes cluster
+      - name: Verify Kind cluster
         shell: powershell
         run: |
-
           Write-Host "Kind clusters:"
           kind get clusters
 
@@ -101,260 +127,292 @@ jobs:
           Write-Host "Kubernetes nodes:"
           kubectl get nodes
 
-          Write-Host ""
-          Write-Host "Current deployment:"
-          kubectl get deployment cats-dogs-api -o wide
-
 
       # ========================================================
-      # 5. Pull EXACT image from GHCR
-      #
-      # Do NOT use :latest.
-      # Pull the immutable CI commit SHA.
+      # 5. Verify local registry
       # ========================================================
 
-      - name: Pull deployment image
+      - name: Verify local registry
         shell: powershell
         run: |
+          Write-Host "Checking local registry..."
 
-          Write-Host "Pulling image:"
+          $response = Invoke-WebRequest `
+            -Uri "http://localhost:5001/v2/" `
+            -UseBasicParsing `
+            -TimeoutSec 10
+
+          if ($response.StatusCode -ne 200) {
+              Write-Error "Local registry is not healthy."
+              exit 1
+          }
+
+          Write-Host "Local registry is healthy."
+
+
+      # ========================================================
+      # 6. Pull EXACT SHA image from GHCR
+      # ========================================================
+
+      - name: Pull exact image from GHCR
+        shell: powershell
+        run: |
+          Write-Host "Pulling exact CI image:"
           Write-Host $env:DEPLOY_IMAGE
 
           docker pull $env:DEPLOY_IMAGE
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to pull deployment image."
+              Write-Error "Failed to pull exact CI image from GHCR."
               exit 1
           }
 
 
       # ========================================================
-      # 6. Verify image exists
+      # 7. Verify pulled image
       # ========================================================
 
-      - name: Verify deployment image
+      - name: Verify pulled image
         shell: powershell
         run: |
-
-          Write-Host "Verifying image locally..."
+          Write-Host "Checking Docker image:"
 
           docker image inspect $env:DEPLOY_IMAGE `
-            --format "Image ID: {{.Id}}"
+            --format "ID={{.Id}} Size={{.Size}} Architecture={{.Architecture}} OS={{.Os}}"
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Deployment image is not available locally."
+              Write-Error "Exact deployment image is not available locally."
               exit 1
           }
 
+          $architecture = docker image inspect $env:DEPLOY_IMAGE `
+            --format "{{.Architecture}}"
+
+          $os = docker image inspect $env:DEPLOY_IMAGE `
+            --format "{{.Os}}"
+
+          Write-Host "OS: $os"
+          Write-Host "Architecture: $architecture"
+
+          if ($os -ne "linux") {
+              Write-Error "Expected Linux image."
+              exit 1
+          }
+
+          if ($architecture -ne "amd64") {
+              Write-Error "Expected amd64 image."
+              exit 1
+          }
+
+          Write-Host "Image architecture verified."
+
 
       # ========================================================
-      # 7. Load EXACT image into Kind
-      #
-      # Kind has its own container runtime/image store.
+      # 8. Tag exact image for local Kind registry
       # ========================================================
 
-      - name: Load image into Kind
+      - name: Tag image for local registry
         shell: powershell
         run: |
-
-          Write-Host "Loading image into Kind:"
+          Write-Host "Tagging:"
           Write-Host $env:DEPLOY_IMAGE
 
-          kind load docker-image $env:DEPLOY_IMAGE `
-            --name cats-dogs-mlops
+          Write-Host ""
+          Write-Host "As:"
+          Write-Host $env:LOCAL_IMAGE
+
+          docker tag `
+            $env:DEPLOY_IMAGE `
+            $env:LOCAL_IMAGE
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to load image into Kind."
+              Write-Error "Failed to tag image for local registry."
               exit 1
           }
 
 
       # ========================================================
-      # 8. Verify image inside Kind node
+      # 9. Push exact image to local registry
       # ========================================================
 
-      - name: Verify image inside Kind
+      - name: Push image to local registry
         shell: powershell
         run: |
+          Write-Host "Pushing:"
+          Write-Host $env:LOCAL_IMAGE
 
-          Write-Host "Images available inside Kind:"
-
-          docker exec `
-            cats-dogs-mlops-control-plane `
-            crictl images
-
-          Write-Host ""
-          Write-Host "Checking exact deployment image..."
-
-          docker exec `
-            cats-dogs-mlops-control-plane `
-            crictl images | Select-String "${{ github.event.workflow_run.head_sha }}"
+          docker push $env:LOCAL_IMAGE
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Exact deployment image was not found inside Kind."
+              Write-Error "Failed to push image to local registry."
               exit 1
           }
 
 
       # ========================================================
-      # 9. Apply Kubernetes manifests
+      # 10. Verify local registry image
+      # ========================================================
+
+      - name: Verify local registry image
+        shell: powershell
+        run: |
+          $repository = "${env:LOCAL_IMAGE_NAME}"
+          $tag = "${env:FULL_SHA}"
+
+          Write-Host "Checking local registry repository:"
+          Write-Host $repository
+
+          $response = Invoke-RestMethod `
+            -Uri "http://localhost:5001/v2/$repository/tags/list" `
+            -TimeoutSec 10
+
+          Write-Host ""
+          Write-Host "Registry response:"
+          $response | ConvertTo-Json
+
+          if ($null -eq $response.tags) {
+              Write-Error "No tags found for local application image."
+              exit 1
+          }
+
+          if ($response.tags -notcontains $tag) {
+              Write-Error "Expected SHA tag was not found in local registry."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Exact SHA image exists in local registry."
+
+
+      # ========================================================
+      # 11. Apply Kubernetes manifests
       # ========================================================
 
       - name: Apply Kubernetes manifests
         shell: powershell
         run: |
-
           kubectl apply -f k8s/deployment.yaml
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to apply deployment manifest."
-              exit 1
-          }
-
           kubectl apply -f k8s/service.yaml
 
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to apply service manifest."
-              exit 1
-          }
-
 
       # ========================================================
-      # 10. Configure image pull policy
+      # 12. Set EXACT immutable deployment image
       #
-      # The image is already loaded into Kind.
+      # IMPORTANT:
+      # We intentionally do NOT use:
+      #
+      #   latest
+      #   kubectl rollout restart
+      #   kind load docker-image
+      #
+      # Kubernetes receives the exact SHA-tagged image.
       # ========================================================
 
-      - name: Configure image pull policy
+      - name: Set exact Kubernetes image
         shell: powershell
         run: |
+          Write-Host "Deploying exact image:"
+          Write-Host $env:LOCAL_IMAGE
 
-          kubectl patch deployment cats-dogs-api `
-            -p '{"spec":{"template":{"spec":{"containers":[{"name":"cats-dogs-api","imagePullPolicy":"IfNotPresent"}]}}}}'
+          kubectl set image `
+            deployment/$env:K8S_DEPLOYMENT `
+            $env:K8S_CONTAINER=$env:LOCAL_IMAGE
 
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to configure imagePullPolicy."
+              Write-Error "Failed to update Kubernetes deployment image."
               exit 1
           }
 
 
       # ========================================================
-      # 11. Set EXACT deployment image
+      # 13. Ensure immutable SHA image policy
       # ========================================================
 
-      - name: Update deployment image
+      - name: Verify image pull policy
         shell: powershell
         run: |
+          $pullPolicy = kubectl get deployment $env:K8S_DEPLOYMENT `
+            -o jsonpath="{.spec.template.spec.containers[0].imagePullPolicy}"
 
-          Write-Host "Updating Kubernetes deployment to:"
-          Write-Host $env:DEPLOY_IMAGE
+          Write-Host "Image pull policy: $pullPolicy"
 
-          kubectl set image deployment/cats-dogs-api `
-            cats-dogs-api=$env:DEPLOY_IMAGE
-
-          if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to update deployment image."
+          if ($pullPolicy -ne "IfNotPresent") {
+              Write-Error "Expected imagePullPolicy=IfNotPresent."
               exit 1
           }
 
 
       # ========================================================
-      # 12. Wait for rollout
+      # 14. Wait for rollout
       # ========================================================
 
       - name: Wait for deployment rollout
         shell: powershell
         run: |
-
           kubectl rollout status `
-            deployment/cats-dogs-api `
-            --timeout=180s
+            deployment/$env:K8S_DEPLOYMENT `
+            --timeout=300s
 
           if ($LASTEXITCODE -ne 0) {
-
-              Write-Host ""
-              Write-Host "Rollout failed. Current state:"
-
-              kubectl get pods `
-                -l app=cats-dogs-api `
-                -o wide
-
-              Write-Host ""
-
-              kubectl describe deployment cats-dogs-api
-
+              Write-Error "Kubernetes deployment rollout failed."
               exit 1
           }
 
 
       # ========================================================
-      # 13. Verify deployed image
+      # 15. Verify deployed image EXACTLY matches SHA
       # ========================================================
 
       - name: Verify deployed image
         shell: powershell
         run: |
-
-          $deployedImage = kubectl get deployment cats-dogs-api `
+          $deployedImage = kubectl get deployment $env:K8S_DEPLOYMENT `
             -o jsonpath="{.spec.template.spec.containers[0].image}"
 
           Write-Host "Expected image:"
-          Write-Host $env:DEPLOY_IMAGE
+          Write-Host $env:LOCAL_IMAGE
 
           Write-Host ""
           Write-Host "Actual deployed image:"
           Write-Host $deployedImage
 
-          if ($deployedImage -ne $env:DEPLOY_IMAGE) {
-              Write-Error "Deployed image does not match CI image."
+          if ($deployedImage -ne $env:LOCAL_IMAGE) {
+              Write-Error "Deployed image does not match expected SHA image."
               exit 1
           }
 
           Write-Host ""
-          Write-Host "Deployment image verified successfully."
+          Write-Host "Exact SHA image verified in Kubernetes."
 
 
       # ========================================================
-      # 14. Verify Kubernetes resources
+      # 16. Verify deployment / pod / service
       # ========================================================
 
-      - name: Verify Kubernetes resources
+      - name: Verify deployed resources
         shell: powershell
         run: |
-
-          Write-Host "=========================================="
-          Write-Host "DEPLOYMENT"
-          Write-Host "=========================================="
-
-          kubectl get deployment cats-dogs-api
-
+          Write-Host "Deployment:"
+          kubectl get deployment $env:K8S_DEPLOYMENT -o wide
 
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "PODS"
-          Write-Host "=========================================="
-
+          Write-Host "Pods:"
           kubectl get pods `
             -l app=cats-dogs-api `
             -o wide
 
-
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "SERVICE"
-          Write-Host "=========================================="
-
+          Write-Host "Service:"
           kubectl get service cats-dogs-api
 
 
       # ========================================================
-      # 15. Start port-forward
+      # 17. Start port-forward
       # ========================================================
 
       - name: Start port-forward
         shell: powershell
         run: |
-
           $process = Start-Process `
             -FilePath "kubectl" `
             -ArgumentList "port-forward service/cats-dogs-api 8001:8000" `
@@ -362,21 +420,21 @@ jobs:
             -WindowStyle Hidden
 
           $process.Id | Out-File `
-            "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+            "$env:RUNNER_TEMP\cats-dogs-port-forward.pid" `
+            -Encoding ascii
 
           Write-Host "Port-forward started."
           Write-Host "PID: $($process.Id)"
 
 
       # ========================================================
-      # 16. Wait for API health
+      # 18. Wait for API health
       # ========================================================
 
-      - name: Wait for API
+      - name: Wait for API health
         shell: powershell
         run: |
-
-          $maxAttempts = 30
+          $maxAttempts = 60
           $attempt = 0
 
           while ($attempt -lt $maxAttempts) {
@@ -390,17 +448,16 @@ jobs:
                   Write-Host "Health response:"
                   $response | ConvertTo-Json
 
-                  if ($response.status -eq "healthy") {
-
-                      Write-Host ""
+                  if (
+                      $response.status -eq "healthy" -and
+                      $response.model_loaded -eq $true
+                  ) {
                       Write-Host "API is healthy."
-
                       exit 0
                   }
 
               }
               catch {
-
                   Write-Host "API not ready yet..."
               }
 
@@ -413,7 +470,7 @@ jobs:
 
 
       # ========================================================
-      # 17. Post-deployment smoke test
+      # 19. Run post-deployment smoke test
       # ========================================================
 
       - name: Run post-deployment smoke test
@@ -421,7 +478,6 @@ jobs:
         env:
           SMOKE_TEST_BASE_URL: http://localhost:8001
         run: |
-
           python scripts/smoke_test.py
 
           if ($LASTEXITCODE -ne 0) {
@@ -431,61 +487,48 @@ jobs:
 
 
       # ========================================================
-      # 18. Show logs
+      # 20. Show deployment logs
       # ========================================================
 
       - name: Show deployment logs
         if: always()
         shell: powershell
         run: |
-
-          Write-Host "=========================================="
-          Write-Host "DEPLOYMENT LOGS"
-          Write-Host "=========================================="
-
-          kubectl logs deployment/cats-dogs-api --tail=50
+          kubectl logs `
+            deployment/$env:K8S_DEPLOYMENT `
+            --tail=100
 
 
       # ========================================================
-      # 19. Final status
+      # 21. Final Kubernetes state
       # ========================================================
 
-      - name: Final deployment status
+      - name: Show final Kubernetes state
         if: always()
         shell: powershell
         run: |
+          Write-Host "Final deployment:"
+          kubectl get deployment $env:K8S_DEPLOYMENT -o wide
 
           Write-Host ""
-          Write-Host "=========================================="
-          Write-Host "FINAL KUBERNETES STATUS"
-          Write-Host "=========================================="
-
-          kubectl get nodes
-
-          Write-Host ""
-
-          kubectl get deployment cats-dogs-api
-
-          Write-Host ""
-
+          Write-Host "Final pods:"
           kubectl get pods `
             -l app=cats-dogs-api `
             -o wide
 
           Write-Host ""
-
+          Write-Host "Final service:"
           kubectl get service cats-dogs-api
 
 
       # ========================================================
-      # 20. Cleanup port-forward
+      # 22. Cleanup port-forward
       # ========================================================
 
       - name: Cleanup port-forward
         if: always()
         shell: powershell
         run: |
-
           $pidFile = "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
 
           if (Test-Path $pidFile) {
