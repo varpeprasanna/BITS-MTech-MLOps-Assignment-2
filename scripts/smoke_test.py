@@ -14,14 +14,7 @@ BASE_URL = os.getenv(
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-TEST_IMAGE = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "PetImages"
-    / "Cat"
-    / "0.jpg"
-)
+TEST_IMAGE = PROJECT_ROOT / "tests" / "fixtures" / "cat.jpg"
 
 
 def fail(message: str) -> None:
