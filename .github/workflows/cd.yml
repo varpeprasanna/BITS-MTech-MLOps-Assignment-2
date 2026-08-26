@@ -16,11 +16,20 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: varpeprasanna/bits-mtech-mlops-assignment-2
+
+  # Local Kind registry
   LOCAL_REGISTRY: localhost:5001
+
+  # Kubernetes resources
   K8S_DEPLOYMENT: cats-dogs-api
   K8S_SERVICE: cats-dogs-api
+
+  # Local port used by kubectl port-forward
   K8S_PORT: "8001"
+
+  # Port exposed by the container / Kubernetes Service
   CONTAINER_PORT: "8000"
+
 
 jobs:
 
@@ -73,14 +82,16 @@ jobs:
           "LOCAL_IMAGE=$localImage" >> $env:GITHUB_ENV
           "FULL_SHA=$fullSha" >> $env:GITHUB_ENV
 
+          Write-Host "============================================"
           Write-Host "CI commit SHA:"
           Write-Host "  $fullSha"
-
+          Write-Host ""
           Write-Host "GHCR image:"
           Write-Host "  $deployImage"
-
+          Write-Host ""
           Write-Host "Local registry image:"
           Write-Host "  $localImage"
+          Write-Host "============================================"
 
 
       # ========================================================
@@ -90,7 +101,16 @@ jobs:
       - name: Verify Docker
         shell: powershell
         run: |
+          Write-Host "Checking Docker..."
+
           docker version --format "{{.Server.Version}}"
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Docker is not available."
+              exit 1
+          }
+
+          Write-Host "Docker is available."
 
 
       # ========================================================
@@ -100,16 +120,29 @@ jobs:
       - name: Verify Kubernetes cluster
         shell: powershell
         run: |
+          Write-Host "============================================"
           Write-Host "Current Kubernetes context:"
           kubectl config current-context
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Unable to determine Kubernetes context."
+              exit 1
+          }
 
           Write-Host ""
           Write-Host "Kubernetes nodes:"
           kubectl get nodes
 
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Kubernetes cluster is not accessible."
+              exit 1
+          }
+
           Write-Host ""
           Write-Host "Kind clusters:"
           kind get clusters
+
+          Write-Host "============================================"
 
 
       # ========================================================
@@ -121,13 +154,23 @@ jobs:
         run: |
           Write-Host "Checking local registry..."
 
-          $response = Invoke-WebRequest `
-            -Uri "http://localhost:5001/v2/" `
-            -UseBasicParsing `
-            -TimeoutSec 10
+          try {
 
-          if ($response.StatusCode -ne 200) {
-              Write-Error "Local registry is not healthy."
+              $response = Invoke-WebRequest `
+                -Uri "http://localhost:5001/v2/" `
+                -UseBasicParsing `
+                -TimeoutSec 10
+
+              if ($response.StatusCode -ne 200) {
+                  Write-Error "Local registry returned HTTP $($response.StatusCode)."
+                  exit 1
+              }
+
+          }
+          catch {
+
+              Write-Error "Local registry is not reachable."
+              Write-Error $_
               exit 1
           }
 
@@ -141,7 +184,7 @@ jobs:
       - name: Pull exact image from GHCR
         shell: powershell
         run: |
-          Write-Host "Pulling:"
+          Write-Host "Pulling exact CI image:"
           Write-Host "  $env:DEPLOY_IMAGE"
 
           docker pull $env:DEPLOY_IMAGE
@@ -150,6 +193,8 @@ jobs:
               Write-Error "Failed to pull exact GHCR image."
               exit 1
           }
+
+          Write-Host "GHCR image pulled successfully."
 
 
       # ========================================================
@@ -169,6 +214,8 @@ jobs:
               exit 1
           }
 
+          Write-Host "Pulled image verified."
+
 
       # ========================================================
       # 8. Tag image for local Kind registry
@@ -179,7 +226,8 @@ jobs:
         run: |
           Write-Host "Tagging:"
           Write-Host "  $env:DEPLOY_IMAGE"
-          Write-Host "as:"
+          Write-Host ""
+          Write-Host "As:"
           Write-Host "  $env:LOCAL_IMAGE"
 
           docker tag `
@@ -191,9 +239,11 @@ jobs:
               exit 1
           }
 
+          Write-Host "Image tagged successfully."
+
 
       # ========================================================
-      # 9. Push exact image to local registry
+      # 9. Push exact image to local Kind registry
       # ========================================================
 
       - name: Push image to local Kind registry
@@ -209,6 +259,8 @@ jobs:
               exit 1
           }
 
+          Write-Host "Image pushed successfully."
+
 
       # ========================================================
       # 10. Verify local registry tag
@@ -217,22 +269,34 @@ jobs:
       - name: Verify local registry image
         shell: powershell
         run: |
-          $repo = "${env:LOCAL_REGISTRY}/${env:K8S_DEPLOYMENT}"
+          Write-Host "Verifying image in local registry..."
 
-          $response = Invoke-RestMethod `
-            -Uri "http://localhost:5001/v2/$($env:K8S_DEPLOYMENT)/tags/list" `
-            -TimeoutSec 10
+          try {
+
+              $response = Invoke-RestMethod `
+                -Uri "http://localhost:5001/v2/$($env:K8S_DEPLOYMENT)/tags/list" `
+                -TimeoutSec 10
+
+          }
+          catch {
+
+              Write-Error "Unable to query local registry."
+              Write-Error $_
+              exit 1
+          }
 
           Write-Host "Local registry response:"
           $response | ConvertTo-Json
 
           if ($response.tags -notcontains $env:FULL_SHA) {
+
               Write-Error `
                 "Expected image tag $env:FULL_SHA was not found in local registry."
+
               exit 1
           }
 
-          Write-Host "Local registry image verified."
+          Write-Host "Local registry image verified successfully."
 
 
       # ========================================================
@@ -242,8 +306,26 @@ jobs:
       - name: Deploy Kubernetes manifests
         shell: powershell
         run: |
+          Write-Host "Applying Kubernetes deployment manifest..."
+
           kubectl apply -f k8s/deployment.yaml
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to apply deployment manifest."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Applying Kubernetes service manifest..."
+
           kubectl apply -f k8s/service.yaml
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to apply service manifest."
+              exit 1
+          }
+
+          Write-Host "Kubernetes manifests applied successfully."
 
 
       # ========================================================
@@ -253,6 +335,17 @@ jobs:
       - name: Set exact deployment image
         shell: powershell
         run: |
+          Write-Host "Updating deployment image..."
+
+          Write-Host "Deployment:"
+          Write-Host "  $env:K8S_DEPLOYMENT"
+
+          Write-Host "Container:"
+          Write-Host "  $env:K8S_DEPLOYMENT"
+
+          Write-Host "Image:"
+          Write-Host "  $env:LOCAL_IMAGE"
+
           kubectl set image `
             deployment/$env:K8S_DEPLOYMENT `
             $env:K8S_DEPLOYMENT=$env:LOCAL_IMAGE
@@ -262,17 +355,99 @@ jobs:
               exit 1
           }
 
+          Write-Host "Deployment image updated successfully."
+
 
       # ========================================================
-      # 13. Wait for rollout
+      # 13. Wait for deployment rollout
       # ========================================================
 
       - name: Wait for deployment rollout
         shell: powershell
         run: |
+          Write-Host "============================================"
+          Write-Host "Waiting for deployment rollout..."
+          Write-Host "Deployment: $env:K8S_DEPLOYMENT"
+          Write-Host "Timeout: 600 seconds"
+          Write-Host "============================================"
+
           kubectl rollout status `
             deployment/$env:K8S_DEPLOYMENT `
             --timeout=600s
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Error "Deployment rollout failed or timed out."
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "DEPLOYMENT STATUS"
+              Write-Host "============================================"
+
+              kubectl get deployment `
+                $env:K8S_DEPLOYMENT `
+                -o wide
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "PODS"
+              Write-Host "============================================"
+
+              kubectl get pods `
+                -l app=$env:K8S_DEPLOYMENT `
+                -o wide
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "REPLICASETS"
+              Write-Host "============================================"
+
+              kubectl get replicasets
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "DEPLOYMENT DESCRIPTION"
+              Write-Host "============================================"
+
+              kubectl describe deployment `
+                $env:K8S_DEPLOYMENT
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "POD DESCRIPTIONS"
+              Write-Host "============================================"
+
+              $pods = kubectl get pods `
+                -l app=$env:K8S_DEPLOYMENT `
+                -o jsonpath="{.items[*].metadata.name}"
+
+              if ($pods) {
+
+                  foreach ($pod in $pods.Split(" ")) {
+
+                      if (-not [string]::IsNullOrWhiteSpace($pod)) {
+
+                          Write-Host ""
+                          Write-Host "Pod: $pod"
+
+                          kubectl describe pod $pod
+                      }
+                  }
+              }
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "RECENT KUBERNETES EVENTS"
+              Write-Host "============================================"
+
+              kubectl get events `
+                --sort-by=.lastTimestamp
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Deployment rollout completed successfully."
 
 
       # ========================================================
@@ -289,15 +464,19 @@ jobs:
           Write-Host "Expected image:"
           Write-Host "  $env:LOCAL_IMAGE"
 
+          Write-Host ""
           Write-Host "Deployed image:"
           Write-Host "  $deployedImage"
 
           if ($deployedImage -ne $env:LOCAL_IMAGE) {
+
               Write-Error `
                 "Kubernetes deployed image does not match expected image."
+
               exit 1
           }
 
+          Write-Host ""
           Write-Host "Deployed image verified successfully."
 
 
@@ -308,18 +487,33 @@ jobs:
       - name: Verify deployed resources
         shell: powershell
         run: |
+          Write-Host "============================================"
           Write-Host "Deployment:"
-          kubectl get deployment $env:K8S_DEPLOYMENT
+          Write-Host "============================================"
+
+          kubectl get deployment `
+            $env:K8S_DEPLOYMENT `
+            -o wide
 
           Write-Host ""
+          Write-Host "============================================"
           Write-Host "Pods:"
+          Write-Host "============================================"
+
           kubectl get pods `
             -l app=$env:K8S_DEPLOYMENT `
             -o wide
 
           Write-Host ""
+          Write-Host "============================================"
           Write-Host "Service:"
-          kubectl get service $env:K8S_SERVICE
+          Write-Host "============================================"
+
+          kubectl get service `
+            $env:K8S_SERVICE
+
+          Write-Host ""
+          Write-Host "Kubernetes resources verified."
 
 
       # ========================================================
@@ -329,28 +523,172 @@ jobs:
       - name: Start port-forward
         shell: powershell
         run: |
+
+          $pidFile = `
+            "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+
+          # ----------------------------------------------------
+          # Remove stale PID file
+          # ----------------------------------------------------
+
+          if (Test-Path $pidFile) {
+
+              Write-Host "Removing stale port-forward PID file."
+
+              Remove-Item `
+                $pidFile `
+                -Force `
+                -ErrorAction SilentlyContinue
+          }
+
+          # ----------------------------------------------------
+          # Check whether local port is already in use
+          # ----------------------------------------------------
+
+          Write-Host "Checking localhost:$env:K8S_PORT..."
+
+          $existingConnection = Get-NetTCPConnection `
+            -LocalPort ([int]$env:K8S_PORT) `
+            -State Listen `
+            -ErrorAction SilentlyContinue
+
+          if ($existingConnection) {
+
+              Write-Warning `
+                "Port $env:K8S_PORT is already in use."
+
+              Write-Host "Existing process IDs:"
+
+              $existingConnection |
+                Select-Object -ExpandProperty OwningProcess |
+                Sort-Object -Unique |
+                ForEach-Object {
+                    Write-Host "  PID: $_"
+                }
+          }
+
+          # ----------------------------------------------------
+          # Start kubectl port-forward
+          # ----------------------------------------------------
+
+          Write-Host ""
+          Write-Host "Starting Kubernetes port-forward..."
+
+          $arguments = `
+            "port-forward " +
+            "service/$env:K8S_SERVICE " +
+            "$env:K8S_PORT`:$env:CONTAINER_PORT"
+
           $process = Start-Process `
             -FilePath "kubectl" `
-            -ArgumentList "port-forward service/$env:K8S_SERVICE $env:K8S_PORT`:$env:CONTAINER_PORT" `
+            -ArgumentList $arguments `
             -PassThru `
             -WindowStyle Hidden
 
           $process.Id |
-            Out-File "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
+            Out-File `
+              $pidFile `
+              -Encoding ascii
 
-          Write-Host `
-            "Port-forward started with PID: $($process.Id)"
+          Write-Host ""
+          Write-Host "Port-forward process started."
+          Write-Host "PID: $($process.Id)"
+          Write-Host "Local endpoint: http://localhost:$env:K8S_PORT"
+          Write-Host "Kubernetes service: $env:K8S_SERVICE"
+          Write-Host "Service port: $env:CONTAINER_PORT"
+
+          # ----------------------------------------------------
+          # Wait until port-forward is listening
+          # ----------------------------------------------------
+
+          Write-Host ""
+          Write-Host "Waiting for port-forward to become ready..."
+
+          $maxAttempts = 30
+          $portReady = $false
+
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+
+              Start-Sleep -Seconds 1
+
+              # Check whether kubectl process is still running
+              $runningProcess = `
+                Get-Process `
+                  -Id $process.Id `
+                  -ErrorAction SilentlyContinue
+
+              if (-not $runningProcess) {
+
+                  Write-Error `
+                    "kubectl port-forward process exited unexpectedly."
+
+                  exit 1
+              }
+
+              # Check TCP listener
+              $connection = Get-NetTCPConnection `
+                -LocalPort ([int]$env:K8S_PORT) `
+                -State Listen `
+                -ErrorAction SilentlyContinue
+
+              if ($connection) {
+
+                  $portReady = $true
+
+                  Write-Host ""
+                  Write-Host `
+                    "Port-forward is listening on localhost:$env:K8S_PORT"
+
+                  break
+              }
+
+              Write-Host `
+                "Waiting for port-forward... attempt $i/$maxAttempts"
+          }
+
+          if (-not $portReady) {
+
+              Write-Error `
+                "Port-forward did not start successfully."
+
+              Write-Host ""
+              Write-Host "Checking kubectl process..."
+
+              Get-Process `
+                -Id $process.Id `
+                -ErrorAction SilentlyContinue
+
+              Write-Host ""
+              Write-Host "Cleaning up port-forward process..."
+
+              Stop-Process `
+                -Id $process.Id `
+                -Force `
+                -ErrorAction SilentlyContinue
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Port-forward is ready."
 
 
       # ========================================================
-      # 17. Wait for API
+      # 17. Wait for API health
       # ========================================================
 
       - name: Wait for API health
         shell: powershell
         run: |
+
           $maxAttempts = 60
           $attempt = 0
+          $healthy = $false
+
+          Write-Host "============================================"
+          Write-Host "Waiting for API health..."
+          Write-Host "URL: http://localhost:$env:K8S_PORT/health"
+          Write-Host "============================================"
 
           while ($attempt -lt $maxAttempts) {
 
@@ -360,6 +698,7 @@ jobs:
                     -Uri "http://localhost:$env:K8S_PORT/health" `
                     -TimeoutSec 5
 
+                  Write-Host ""
                   Write-Host "Health response:"
                   $response | ConvertTo-Json
 
@@ -367,23 +706,69 @@ jobs:
                     $response.status -eq "healthy" -and
                     $response.model_loaded -eq $true
                   ) {
+
+                      $healthy = $true
+
+                      Write-Host ""
                       Write-Host "API is healthy."
-                      exit 0
+                      Write-Host "Model is loaded."
+
+                      break
                   }
+
+                  Write-Host ""
+                  Write-Host `
+                    "API responded, but health conditions are not satisfied."
 
               }
               catch {
 
+                  Write-Host ""
                   Write-Host `
-                    "API not ready yet..."
+                    "API not ready yet... attempt $($attempt + 1)/$maxAttempts"
               }
 
               Start-Sleep -Seconds 2
               $attempt++
           }
 
-          Write-Error "API did not become healthy."
-          exit 1
+          if (-not $healthy) {
+
+              Write-Error `
+                "API did not become healthy within the expected time."
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "DEPLOYMENT"
+              Write-Host "============================================"
+
+              kubectl get deployment `
+                $env:K8S_DEPLOYMENT `
+                -o wide
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "PODS"
+              Write-Host "============================================"
+
+              kubectl get pods `
+                -l app=$env:K8S_DEPLOYMENT `
+                -o wide
+
+              Write-Host ""
+              Write-Host "============================================"
+              Write-Host "POD LOGS"
+              Write-Host "============================================"
+
+              kubectl logs `
+                deployment/$env:K8S_DEPLOYMENT `
+                --tail=100
+
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "API health verification successful."
 
 
       # ========================================================
@@ -395,12 +780,17 @@ jobs:
         env:
           SMOKE_TEST_URL: http://localhost:8001
         run: |
+
+          Write-Host "Running post-deployment smoke test..."
+
           python scripts/smoke_test.py
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error "Post-deployment smoke test failed."
               exit 1
           }
+
+          Write-Host "Post-deployment smoke test passed."
 
 
       # ========================================================
@@ -412,13 +802,19 @@ jobs:
         env:
           SMOKE_TEST_URL: http://localhost:8001
         run: |
+
+          Write-Host "Running post-deployment model evaluation..."
+
           python scripts/post_deployment_evaluation.py
 
           if ($LASTEXITCODE -ne 0) {
               Write-Error `
                 "Post-deployment model evaluation failed."
+
               exit 1
           }
+
+          Write-Host "Post-deployment model evaluation passed."
 
 
       # ========================================================
@@ -428,7 +824,10 @@ jobs:
       - name: Collect application metrics
         shell: powershell
         run: |
+
+          Write-Host "============================================"
           Write-Host "Application metrics:"
+          Write-Host "============================================"
 
           try {
 
@@ -443,6 +842,8 @@ jobs:
 
               Write-Warning `
                 "Could not retrieve application metrics."
+
+              Write-Warning $_
           }
 
 
@@ -468,9 +869,20 @@ jobs:
         if: always()
         shell: powershell
         run: |
+
+          Write-Host "============================================"
+          Write-Host "Final deployment logs"
+          Write-Host "============================================"
+
           kubectl logs `
             deployment/$env:K8S_DEPLOYMENT `
             --tail=100
+
+          if ($LASTEXITCODE -ne 0) {
+
+              Write-Warning `
+                "Could not retrieve deployment logs."
+          }
 
 
       # ========================================================
@@ -485,20 +897,49 @@ jobs:
           $pidFile = `
             "$env:RUNNER_TEMP\cats-dogs-port-forward.pid"
 
+          Write-Host "Cleaning up port-forward..."
+
           if (Test-Path $pidFile) {
 
-              $processId = Get-Content $pidFile
-
-              Write-Host `
-                "Stopping port-forward process $processId"
-
-              Stop-Process `
-                -Id $processId `
-                -Force `
+              $processIdText = Get-Content `
+                $pidFile `
                 -ErrorAction SilentlyContinue
+
+              if ($processIdText) {
+
+                  try {
+
+                      $processId = [int]$processIdText
+
+                      Write-Host `
+                        "Stopping port-forward process $processId"
+
+                      Stop-Process `
+                        -Id $processId `
+                        -Force `
+                        -ErrorAction SilentlyContinue
+
+                      Write-Host `
+                        "Port-forward process stopped."
+
+                  }
+                  catch {
+
+                      Write-Warning `
+                        "Could not stop port-forward process."
+
+                      Write-Warning $_
+                  }
+              }
 
               Remove-Item `
                 $pidFile `
                 -Force `
                 -ErrorAction SilentlyContinue
           }
+          else {
+
+              Write-Host "No port-forward PID file found."
+          }
+
+          Write-Host "Port-forward cleanup completed."
