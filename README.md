@@ -1,3 +1,14 @@
+**Student Name:** Varpe Prasanna Chandrakant  
+**Student ID:** 2024ac05033  
+## GitHub Repository
+
+Repository:
+
+https://github.com/varpeprasanna/BITS-MTech-MLOps-Assignment-2
+The repository contains the complete source code, DVC configuration,
+CI/CD workflows, Docker configuration, Kubernetes manifests,
+testing scripts, monitoring implementation, and model artifacts.
+
 # Cats vs Dogs — MLOps Assignment 2
 
 An end-to-end MLOps implementation for binary Cats vs Dogs image classification. This project covers the complete machine learning lifecycle, bridging the gap between local model development and production-grade deployment:
